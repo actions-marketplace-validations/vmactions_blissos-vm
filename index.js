@@ -565,13 +565,36 @@ async function install(arch, sync, builderVersion, debug, disableCache) {
     } else if (arch === 'aarch64' || arch === 'arm64') {
       pkgs.push("qemu-system-arm", "qemu-efi-aarch64", "ipxe-qemu");
     } else {
-      // qemu-system-misc covers riscv64 (and the other "misc" targets), but
-      // ppc64 / sparc64 / s390x ship in their own packages on Ubuntu. These
-      // only *recommend* seabios (which --no-install-recommends skips), unlike
-      // qemu-system-x86 which depends on it; install it explicitly so the VGA
-      // romfiles (e.g. vgabios-stdvga.bin, used by the pseries default display)
-      // are present.
-      pkgs.push("qemu-system-misc", "u-boot-qemu", "ipxe-qemu", "seabios");
+      // qemu-system-misc covers the "misc" targets (loongarch64, and riscv64
+      // up to Ubuntu 24.04 -- see below), but ppc64 / sparc64 / s390x ship in
+      // their own packages on Ubuntu. These only *recommend* seabios (which
+      // --no-install-recommends skips), unlike qemu-system-x86 which depends
+      // on it; install it explicitly so the VGA romfiles (e.g.
+      // vgabios-stdvga.bin, used by the pseries default display) are present.
+      //
+      // riscv64: Ubuntu 26.04 moved qemu-system-riscv64 -- and the OpenSBI
+      // firmware that 24.04 ships in qemu-system-data -- out of
+      // qemu-system-misc into a new qemu-system-riscv package, so misc alone
+      // leaves an ubuntu-26.04 runner with no riscv64 binary ("QEMU binary
+      // 'qemu-system-riscv64' not found"). 24.04 and 22.04 have no
+      // qemu-system-riscv package at all, so pick by the host release:
+      // VERSION_ID 24 and older keep misc, anything newer takes the new name.
+      let miscPkg = "qemu-system-misc";
+      if (arch === 'riscv64') {
+        let hostMajor = NaN;
+        try {
+          const m = fs.readFileSync('/etc/os-release', 'utf8').match(/^VERSION_ID="?(\d+)/m);
+          if (m) {
+            hostMajor = parseInt(m[1], 10);
+          }
+        } catch (e) {
+          // No /etc/os-release: treat it as a new release.
+        }
+        if (!(hostMajor <= 24)) {
+          miscPkg = "qemu-system-riscv";
+        }
+      }
+      pkgs.push(miscPkg, "u-boot-qemu", "ipxe-qemu", "seabios");
       if (arch === 'powerpc64' || arch === 'ppc64' || arch === 'ppc64le') {
         pkgs.push("qemu-system-ppc");
       } else if (arch === 'sparc64' || arch === 'sparc') {
@@ -853,6 +876,12 @@ async function main() {
     const cacheAfterPrepareInput = core.getInput("cache-after-prepare").toLowerCase() === 'true';
     let debugOnError = core.getInput("debug-on-error").toLowerCase() === 'true';
     const vncPassword = core.getInput("vnc-password");
+    // Handed to anyvm.py as GITHUB_TOKEN so its GitHub API requests (the
+    // builder release list, used when the direct image URL probe fails) are
+    // authenticated. Unauthenticated api.github.com calls are limited per
+    // IP, and a hosted runner shares its IP with many other jobs; one
+    // exhausted limit surfaced as "Unsupported OS" (freebsd-vm#163).
+    const githubToken = core.getInput("token");
 
     const work = path.join(process.env["HOME"], "work");
     let vmwork = path.join(process.env["HOME"], "work");
@@ -1285,6 +1314,9 @@ async function main() {
         }
       }
     };
+    if (githubToken && !process.env.GITHUB_TOKEN) {
+      options.env = Object.assign({}, process.env, { GITHUB_TOKEN: githubToken });
+    }
     await exec.exec("python3", args, options);
     core.endGroup();
 
