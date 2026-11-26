@@ -44,16 +44,16 @@ jobs:
           oldHash="$(cat .github/workflows/test.yml | grep -i "uses: ${{ github.repository }}" | head -1 | cut -d @ -f 2)"
           echo "OLD_HASH=${oldHash}" >> $GITHUB_ENV
 
-          git clone https://github.com/vmactions/base-vm.git
+          git clone https://github.com/${{ github.repository_owner }}/base-vm.git
 
           # Collect base-vm commit messages since last generate
           BASEVM_HASH_FILE=".github/data/base-vm-hash.txt"
           BASEVM_NEW_HASH="$(git -C base-vm rev-parse HEAD)"
           if [ -f "$BASEVM_HASH_FILE" ]; then
             BASEVM_OLD_HASH="$(cat "$BASEVM_HASH_FILE")"
-            BASEVM_LOG="$(git -C base-vm log --format="https://github.com/vmactions/base-vm/commit/%H %s" "${BASEVM_OLD_HASH}..${BASEVM_NEW_HASH}" 2>/dev/null || git -C base-vm log --format="https://github.com/vmactions/base-vm/commit/%H %s" -20)"
+            BASEVM_LOG="$(git -C base-vm log --format="https://github.com/${{ github.repository_owner }}/base-vm/commit/%H %s" "${BASEVM_OLD_HASH}..${BASEVM_NEW_HASH}" 2>/dev/null || git -C base-vm log --format="https://github.com/${{ github.repository_owner }}/base-vm/commit/%H %s" -20)"
           else
-            BASEVM_LOG="$(git -C base-vm log --format="https://github.com/vmactions/base-vm/commit/%H %s" -1)"
+            BASEVM_LOG="$(git -C base-vm log --format="https://github.com/${{ github.repository_owner }}/base-vm/commit/%H %s" -1)"
           fi
           echo "$BASEVM_NEW_HASH" > "$BASEVM_HASH_FILE"
 
@@ -312,15 +312,26 @@ jobs:
           # the command is `audit`); a standalone `npm audit fix` exits 1
           # with "audit endpoint returned an error". An outage is no reason
           # to skip the regen -- the lock-pinned tree is what shipped before
-          # audit fix existed -- so tolerate exactly that error and keep
-          # every other audit fix failure (unfixable vulnerabilities) fatal.
+          # audit fix existed -- so tolerate exactly that error.
+          #
+          # --audit-level=high: audit fix still applies every fix it can, at
+          # any severity, but only a high or critical advisory left unfixed
+          # fails the run. A moderate one with no fix in range must not block
+          # every regen: on 2026-10-31 GHSA-g3hv-75wg-m249 (minimatch
+          # < 11.0.1, pulled in by @actions/cache -> @actions/glob, whose
+          # range cannot take 11) turned every Step 2 in the fleet red.
+          # Forcing 11 with an npm override is no way out: 11 made
+          # Minimatch.matchOne private, @actions/glob 0.7.0 still calls it,
+          # and the cache save would throw "matchOne is not a function".
           set -o pipefail
-          if ! npm audit fix 2>&1 | tee /tmp/npm-audit-fix.log; then
+          if ! npm audit fix --audit-level=high 2>&1 | tee /tmp/npm-audit-fix.log; then
             if grep -q 'audit endpoint returned an error' /tmp/npm-audit-fix.log; then
               echo "::warning::npm advisories endpoint unavailable, skipping audit fix this run"
             else
               exit 1
             fi
+          elif grep -q 'severity vulnerabilit' /tmp/npm-audit-fix.log; then
+            echo "::warning::npm audit fix left vulnerabilities below the high level unfixed, see this step's log"
           fi
           git add node_modules
 
